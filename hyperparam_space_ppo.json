@@ -1,0 +1,10 @@
+{
+                "layer_1_size":[16, 32, 64, 128],
+                "layer_2_size":[16, 32, 64],
+                "layer_1_activation":["relu"],
+                "layer_2_activation":["relu"],
+                "has_third_layer":[true, false],
+                "learning_rate":[0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001],
+                "baseline_lr_mult":[5, 2, 1, 1, 1, 1, 0.5, 0.2]
+}
+
