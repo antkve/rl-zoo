@@ -235,19 +235,9 @@ def setup_agent(states, actions, args, save_dir=None,
         agent_spec = base_agent
         agent_spec.update(kwargs)
         agent_spec = {k:default(v) for k, v in agent_spec.items()}
-        print(agent_spec)
         agent = DQNAgent(**{key:value 
             for key, value in agent_spec.items() if key != 'type'})
     
-    # agent = Agent.from_spec(
-    #     spec=base_agent,
-    #     kwargs=kwargs
-    # )
-    
-
-
-    
-
     with open(os.path.join(save_dir, "agent.json"), 'w') as f:
         f.write(json.dumps(agent_spec))
     
@@ -263,7 +253,6 @@ def load_agent(agent_folder):
 
 
 class Record:
-
     def __init__(self):
         self.rewards = []
         self.ep = 0
