@@ -3,10 +3,10 @@
                 "layer_2_size":[16, 32, 64],
                 "learning_rate":[0.005, 0.001, 0.0005, 0.0001],
 		"target_sync_frequency":[200, 600, 2000, 4000, 8000],
-		"epsilon":[0.1, 0.2, 0.3],
+		"epsilon":[0.05, 0.1, 0.2],
 		"initial_epsilon":[0.5],
 		"final_epsilon":[0.05],
-		"exploration_timesteps":[20000],
+		"exploration_timesteps":[10000, 20000, 40000, 80000, 200000],
 		"epsilon_decay":[true, false],
 		"sigma0":[0.3, 0.5, 0.7]
 }

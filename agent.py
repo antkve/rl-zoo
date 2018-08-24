@@ -110,19 +110,45 @@ def graph_episode(history, save_path=None):
         plt.show()
 
 
-def get_variance_bounds(rewards, variances, n=10):
-    upper_bounds = lower_bounds = []
-    for ix, rewards in enumerate(rewards):
-        last_n = rewards[ix-n:ix]
-        upper_bounds.append(max(last_n))
-        lower_bounds.append(min(last_n))
-    return upper_bounds, lower_bounds
+def iter_group_indices(start, end, half_window):
+    for k in range(end - start):
+        yield slice(max(start + k, 0), min(start + k + 2 * half_window, end + half_window))
+
+def mean_std_dev(ys):
+    mean = np.mean(ys)
+    std_dev = np.sqrt(sum([(x - mean)**2 for x in ys])/len(ys))
+    return mean, std_dev
+
+def moving_average(ys, half_window=10):
+    aves = []
+    ave_tops = []
+    ave_bottoms = []
+    for sl in iter_group_indices(-half_window, len(ys) - half_window, half_window):
+        mean, std_dev = mean_std_dev(ys[sl])
+        aves.append(mean)
+        ave_tops.append(mean + 1.5*std_dev)
+        ave_bottoms.append(mean - 1.5*std_dev)
+#        aves.append(np.mean(ys[sl]))
+#        ave_tops.append(max(ys[sl]))
+#        ave_bottoms.append(min(ys[sl]))
+    return aves, ave_tops, ave_bottoms
 
 
-def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None):
+
+def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, ylims=None, half_window=10):
     import matplotlib.pyplot as plt
     plt.clf()
-    plt.plot(rewards)
+
+    aves, ave_tops, ave_bottoms = moving_average(rewards, half_window)
+    print(aves)
+    print(ave_tops)
+    print(ave_bottoms)
+    plt.plot(rewards, 'bo', markersize=2)
+    plt.plot(aves, 'r')
+    plt.fill_between(range(len(ave_tops)), ave_tops, ave_bottoms,
+                     color='r', alpha=.5)
+    if ylims:
+        plt.ylim(ylims)
     if test_rewards:
         plt.plot(test_episodes, test_rewards)
     if save_dir:
@@ -334,7 +360,8 @@ def dqn_experiment(args, env_name, base_agent="agent.json",
 
     tf.reset_default_graph()
 
-    handle_ep = functools.partial(handle_ep_with_context, num_episodes, Record())
+    ep_record = Record()
+    handle_ep = functools.partial(handle_ep_with_context, num_episodes, ep_record)
 
     env = gym.wrappers.Monitor(gym.make(env_name), 
             os.path.join(agent_folder, "monitor"))
@@ -357,17 +384,20 @@ def dqn_experiment(args, env_name, base_agent="agent.json",
                       handle_ep=handle_ep,
                       **train_kwargs)
         except (gym.error.Error, KeyboardInterrupt):
-            plot_rewards(rewards, save_dir=agent_folder)
+            plot_rewards(ep_record.rewards, save_dir=agent_folder, ylims=(-500, 250), half_window=round(num_episodes / 20))
             pass
         
-        experiment_data = {"final_test_reward":np.mean(rewards[-1]),
-                "test_average_last_50":np.mean(rewards[-50::10]),
-                "train_average_last_50":np.mean(rewards[-50:]),
-                "test_average_last_10":np.mean(rewards[-10::5]),
-                "train_average_last_10":np.mean(rewards[-10:]),
+        experiment_data = {"final_test_reward":np.mean(ep_record.rewards[-1]),
+                "test_average_last_50":np.mean(ep_record.rewards[-50::10]),
+                "train_average_last_50":np.mean(ep_record.rewards[-50:]),
+                "test_average_last_10":np.mean(ep_record.rewards[-10::5]),
+                "train_average_last_10":np.mean(ep_record.rewards[-10:]),
                 }
         experiment_data.update(args)
-        return experiment_data
+    del builder
+    del dqn
+    env.close()
+    return experiment_data
 
 
 def experiment(args, env_name, base_agent="agent.json", 
@@ -414,7 +444,7 @@ def experiment(args, env_name, base_agent="agent.json",
 def write_csv(filename, data):
     exists = os.path.exists(filename)
     with open(filename, 'a' if exists else 'w') as f:
-        dw = csv.DictWriter(f, fieldnames=data[0])
+        dw = csv.DictWriter(f, fieldnames=data[0].keys())
         if exists:
             dw.writeheader()
         for row in data:
