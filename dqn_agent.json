@@ -1,0 +1,38 @@
+
+{
+    "type": "dqn_agent",
+
+    "update_mode": {
+        "unit": "timesteps",
+        "batch_size": 64,
+        "frequency": 4
+    },
+    "memory": {
+        "type": "replay",
+        "capacity": 350000,
+        "include_next_states": true
+    },
+    "discount": 0.99,
+    "entropy_regularization": null,
+    "double_q_model": true,
+
+    "target_sync_frequency": 600,
+    "target_update_weight": 1.0,
+
+    "actions_exploration": {
+        "type": "epsilon_anneal",
+        "initial_epsilon": 0.5,
+        "final_epsilon": 0.0,
+        "timesteps": 10000
+    },
+
+    "summarizer": {
+        "directory": null,
+        "labels": ["graph", "total-loss"]
+    },
+    "execution": {
+        "type": "single",
+        "session_config": null,
+        "distributed_spec": null
+    }
+}

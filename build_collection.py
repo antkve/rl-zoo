@@ -8,6 +8,7 @@ parser = argparse.ArgumentParser(description="Build a Zegami collection out of a
 parser.add_argument("folder", help="Folder the agents are stored in")
 parser.add_argument("target_folder", help="Folder to store the collection in")
 parser.add_argument("-t", "--training-only", action="store_true", help="Only copies the training graphs, suitable for image-only collections")
+parser.add_argument("-v", "--video", action="store_true", help="Include video")
 
 args = parser.parse_args()
 
@@ -31,11 +32,12 @@ for agent in [f for f in os.listdir(args.folder) if os.path.isdir(join(args.fold
     shutil.copyfile(join(agent_folder, "training.png"),
             join(args.target_folder, "images", "training_{}.png".format(agent))
             )
-    vids = [fn for fn in os.listdir(join(agent_folder, "monitor")) 
-            if fn.split(".")[-1] == 'mp4']
-    vid_name = vids[-1]
-    shutil.copy(join(agent_folder, "monitor", vid_name), 
-            join(args.target_folder, "videos", "video_{}.mp4".format(agent)))
+    if args.video:
+        vids = [fn for fn in os.listdir(join(agent_folder, "monitor")) 
+                if fn.split(".")[-1] == 'mp4']
+        vid_name = sorted(vids, key=lambda vn: int(vn.split('.')[-2][-4:]))[-1]
+        shutil.copy(join(agent_folder, "monitor", vid_name), 
+                join(args.target_folder, "videos", "video_{}.mp4".format(agent)))
 #    shutil.copy(join(agent_folder, "agent.json"), 
 #            join(args.target_folder, "models", "agent_{}.json".format(agent)))
 

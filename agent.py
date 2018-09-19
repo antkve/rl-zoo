@@ -1,4 +1,4 @@
-import gym
+import gym 
 from gym_seasonals.envs.seasonals_env import SeasonalsEnv 
 from gym_seasonals.envs.seasonals_env import portfolio_var
 from gym_seasonals.envs.remote_env import RemoteEnv 
@@ -19,8 +19,10 @@ import tensorflow as tf
 from anyrl.algos import DQN, TFScheduleValue, LinearTFSchedule
 from anyrl.envs import BatchedGymEnv
 from anyrl.envs.wrappers import BatchedFrameStack
-from anyrl.models import MLPDistQNetwork, noisy_net_dense, MLPQNetwork, EpsGreedyQNetwork
-from anyrl.rollouts import BatchedPlayer, PrioritizedReplayBuffer, NStepPlayer, BasicPlayer, UniformReplayBuffer
+from anyrl.models import MLPDistQNetwork, noisy_net_dense, \
+        MLPQNetwork, EpsGreedyQNetwork
+from anyrl.rollouts import BatchedPlayer, PrioritizedReplayBuffer, \
+        NStepPlayer, BasicPlayer, UniformReplayBuffer
 from anyrl.spaces import gym_space_vectorizer
 
 
@@ -39,7 +41,8 @@ def test(agent, env, start_index=None,
     agent.reset()
     if (start_index or end_index) and (start_index > 0 or end_index < 1969):
         env.set_simulation_window(start_index=start_index, end_index=end_index)
-        state, terminal, reward_diff = env.execute(env.null_action)
+        if start_index:
+            state, terminal, reward_diff = env.execute(env.null_action)
     reward = 0
 
     while True:
@@ -79,7 +82,7 @@ def train(agent, env, num_episodes=1, start_index=None,
                 break
         rewards.append(reward)
         episode_finished(episode, reward)
-        if episode % 10 == 0 and test_env:
+        if episode % 10 == 0 and test_env is not None:
             test_reward, _ = test(agent, test_env, start_index=(
                 test_env.first_trading_day + 252 * 5 ) \
                         if hasattr(test_env, 'first_trading_day') else None)
@@ -116,22 +119,28 @@ def iter_group_indices(start, end, half_window):
 
 def mean_std_dev(ys):
     mean = np.mean(ys)
-    std_dev = np.sqrt(sum([(x - mean)**2 for x in ys])/len(ys))
+    std_dev = np.sqrt(sum([(x - mean)**2 for x in ys])/len(ys)) if len(ys) else 0
     return mean, std_dev
 
 def moving_average(ys, half_window=10):
+    print(ys)
     aves = []
     ave_tops = []
     ave_bottoms = []
-    for sl in iter_group_indices(-half_window, len(ys) - half_window, half_window):
-        mean, std_dev = mean_std_dev(ys[sl])
-        aves.append(mean)
-        ave_tops.append(mean + 1.5*std_dev)
-        ave_bottoms.append(mean - 1.5*std_dev)
+    if len(ys) < half_window:
+        return [0], [0], [0], 0
+    try:
+        for sl in iter_group_indices(-half_window, len(ys) - half_window, half_window):
+            mean, std_dev = mean_std_dev(ys[sl])
+            aves.append(mean)
+            ave_tops.append(mean + 1.5*std_dev)
+            ave_bottoms.append(mean - 1.5*std_dev)
 #        aves.append(np.mean(ys[sl]))
 #        ave_tops.append(max(ys[sl]))
 #        ave_bottoms.append(min(ys[sl]))
-    return aves, ave_tops, ave_bottoms
+        return aves, ave_tops, ave_bottoms, std_dev
+    except UnboundLocalError:
+        return [0], [0], [0], 0
 
 
 
@@ -139,10 +148,7 @@ def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, 
     import matplotlib.pyplot as plt
     plt.clf()
 
-    aves, ave_tops, ave_bottoms = moving_average(rewards, half_window)
-    print(aves)
-    print(ave_tops)
-    print(ave_bottoms)
+    aves, ave_tops, ave_bottoms, std_dev = moving_average(rewards, half_window)
     plt.plot(rewards, 'bo', markersize=2)
     plt.plot(aves, 'r')
     plt.fill_between(range(len(ave_tops)), ave_tops, ave_bottoms,
@@ -162,6 +168,7 @@ def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, 
             plt.clf()
     else:
         plt.show()
+    return aves, std_dev
 
 
 def geom_mean(*args):
@@ -174,6 +181,7 @@ def default(o):
     return o
 
 
+# TODO: move branch to higher level
 def setup_agent(states, actions, args, save_dir=None,
         load_dir=None, base_agent_file="agent.json"):
 
@@ -279,36 +287,60 @@ def load_agent(agent_folder):
 
 
 class Record:
-    def __init__(self):
+    def __init__(self, filename, save_rate=20):
         self.rewards = []
         self.ep = 0
+        self.solved = False
+        self.filename = filename
+        self.save_rate = save_rate
 
 
 def handle_ep_with_context(num_episodes, context, ts, rew):
-    print("Reward: {} for episode {} at timestep {}".format(rew, context.ep, ts))
+    print("Reward: {} for episode {} at timestep {} \t\t Last 100 average: {}".format(rew, context.ep, ts, np.mean(context.rewards[-100:])))
     context.rewards.append(rew)
     context.ep += 1
+    if np.mean(context.rewards[-100:]) > 200:
+        context.solved = context.ep
+        raise gym.error.Error
+
+    if context.rewards[-1] > 30:
+        raise gym.error.Error
+
+#    if np.mean(context.rewards[-5:]) > 0:
+#        if not os.path.exists(context.filename):
+#            os.mkdir(context.filename)
+#        tf.train.Saver().save(context.sess, os.path.join(context.filename, 'model.ckpt_{}'.format(context.ep)))
     if context.ep >= num_episodes:
         raise gym.error.Error
 
-
-class DQNBuilder:
-
+class ModelBuilder:
     def __init__(self, env, args):
         self.args = args
         self.env = env
 
     def build_network(self, sess, name):
-        return MLPDistQNetwork(
-            sess, 
-            self.env.action_space.n, 
-            gym_space_vectorizer(self.env.observation_space), 
-            name, 51, -10, 10, 
-            layer_sizes=[self.args['layer_1_size'], self.args['layer_2_size']],
-            dueling=True, 
-            dense=partial(noisy_net_dense, sigma0=self.args['sigma0']))
+        raise NotImplementedError
 
     def finish(self, sess, dqn):
+        raise NotImplementedError
+
+
+class DQNBuilder(ModelBuilder):
+
+    def build_network(self, sess, name):
+        layer_sizes = [self.args['layer_1_size'], self.args['layer_2_size']]
+        if self.args['has_third_layer']:
+            layer_sizes.append(
+                    geom_mean(self.args['layer_2_size'], self.env.action_space.n)
+                    )
+        return MLPQNetwork(
+            sess,
+            self.env.action_space.n,
+            gym_space_vectorizer(self.env.observation_space),
+            name,
+            layer_sizes=layer_sizes)
+
+    def finish(self, sess, dqn, optimize=True):
         eps_decay_sched = TFScheduleValue(sess,
                 LinearTFSchedule(
                     self.args['exploration_timesteps'],
@@ -319,8 +351,8 @@ class DQNBuilder:
         return {
             "player": BasicPlayer(
                 self.env, EpsGreedyQNetwork(dqn.online_net, eps_decay_sched)),
-            "optimize_op": dqn.optimize(learning_rate=self.args['learning_rate']),
-            "replay_buffer": UniformReplayBuffer(100000),
+            "optimize_op": dqn.optimize(learning_rate=self.args['learning_rate']) if optimize else None,
+            "replay_buffer": UniformReplayBuffer(1000),
         }
 
 
@@ -336,15 +368,15 @@ class RainbowDQNBuilder(DQNBuilder):
     """
 
     def build_network(self, sess, name):
-        return MLPQNetwork(
-            sess,
-            self.env.action_space.n,
-            gym_space_vectorizer(self.env.observation_space),
-            name,
-            layer_sizes=[
-                    self.args['layer_1_size'],
-                    self.args['layer_2_size']]
-        )
+        return MLPDistQNetwork(
+            sess, 
+            self.env.action_space.n, 
+            gym_space_vectorizer(self.env.observation_space), 
+            name, 51, -10, 10, 
+            layer_sizes=layer_sizes,
+            dueling=True, 
+            dense=partial(noisy_net_dense, sigma0=self.args['sigma0']))
+
 
     def finish(self, sess, dqn):
         env = BatchedGymEnv([[self.env]])
@@ -354,49 +386,107 @@ class RainbowDQNBuilder(DQNBuilder):
             "replay_buffer": PrioritizedReplayBuffer(20000, 0.5, 0.4, epsilon=0.2),
         }
 
+    def build_model(self, online_network, target_network):
+        return DQN(online_network, target_network)
 
-def dqn_experiment(args, env_name, base_agent="agent.json", 
-        agent_folder=None, visualize=True, num_episodes=500, rainbow=False):
+
+class LSTMACBuilder(ModelBuilder):
+    def build_network(self, sess, name):
+        return RNNCellAC(sess,
+                  self.env.action_space.n,
+                  gym_space_vectorizer(self.env.observation_space),
+                  make_cell=lambda: tf.contrib.rnn.LSTMCell(self.args['layer_1_size']))
+
+
+def load_anyrl_agent(agent_number):
+    with open("trials.csv", 'r') as f:
+        dr = csv.DictReader(f)
+        data = [row for row in dr]
+
+
+def anyrl_experiment(args, env_name, agent_folder=None, visualize=True, 
+        num_episodes=500, rainbow=False, seasonals=False):
 
     tf.reset_default_graph()
 
-    ep_record = Record()
+    seasonals = env_name == 'seasonals-v1'
+    if seasonals:
+        os.mkdir(agent_folder)
+    
+    ep_record = Record(filename=os.path.join(agent_folder, "model"))
     handle_ep = functools.partial(handle_ep_with_context, num_episodes, ep_record)
 
-    env = gym.wrappers.Monitor(gym.make(env_name), 
-            os.path.join(agent_folder, "monitor"))
+    def video_callable_with_context(context, episode_id):
+        if episode_id == 50 or episode_id % 100 == 0:
+            return True
+        if np.mean(context.rewards[-98:]) > 200:
+            return True
+        return False
+
+    env = gym.wrappers.Monitor(
+            gym.make(env_name), 
+            os.path.join(agent_folder, "monitor"), 
+            video_callable=functools.partial(
+                video_callable_with_context, ep_record
+                )
+            ) if not seasonals  else EnvWrap(
+                gym.make('seasonals-v1'))
+
+    env.set_simulation_window(start_index=1500, end_index=1968)
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     builder_class = RainbowDQNBuilder if rainbow else DQNBuilder
     builder = builder_class(env, args)
+
     with tf.Session(config=config) as sess:
+
         online = builder.build_network(sess, 'online')
         target = builder.build_network(sess, 'target')
         dqn = DQN(online, target)
+
         train_kwargs = builder.finish(sess, dqn)
+
         sess.run(tf.global_variables_initializer())
         try:
             dqn.train(num_steps=3000000,
                       train_interval=4,
                       target_interval=args['target_sync_frequency'],
                       batch_size=32,
-                      min_buffer_size=400,
+                      min_buffer_size=200,
                       handle_ep=handle_ep,
                       **train_kwargs)
-        except (gym.error.Error, KeyboardInterrupt):
-            plot_rewards(ep_record.rewards, save_dir=agent_folder, ylims=(-500, 250), half_window=round(num_episodes / 20))
+        except gym.error.Error:
+            aves, std_dev = plot_rewards(ep_record.rewards, 
+                    save_dir=agent_folder, ylims=((-500, 250) 
+                        if not seasonals else None), 
+                    half_window=round(num_episodes / 20))
             pass
-        
+        except KeyboardInterrupt:
+            aves, std_dev = plot_rewards(ep_record.rewards, 
+                    save_dir=agent_folder, ylims=((-500, 250) 
+                        if not seasonals else None), 
+                    half_window=round(num_episodes / 20))
+            raise
+        filename = os.path.join(agent_folder, "model")
+        if not os.path.exists(filename):
+            os.mkdir(filename)
+        tf.train.Saver().save(sess, os.path.join(filename, "model-best.ckpt"))
         experiment_data = {"final_test_reward":np.mean(ep_record.rewards[-1]),
                 "test_average_last_50":np.mean(ep_record.rewards[-50::10]),
                 "train_average_last_50":np.mean(ep_record.rewards[-50:]),
                 "test_average_last_10":np.mean(ep_record.rewards[-10::5]),
                 "train_average_last_10":np.mean(ep_record.rewards[-10:]),
+                "max_score":max(ep_record.rewards)
                 }
         experiment_data.update(args)
+        experiment_data['solved'] = True \
+                if np.mean(ep_record.rewards[-100:]) > 200 \
+                else False
+        experiment_data['final_std_dev'] = std_dev
     del builder
     del dqn
     env.close()
+    experiment_data['agent'] = agent_folder.split('/')[-1]
     return experiment_data
 
 
@@ -443,10 +533,14 @@ def experiment(args, env_name, base_agent="agent.json",
 
 def write_csv(filename, data):
     exists = os.path.exists(filename)
-    with open(filename, 'a' if exists else 'w') as f:
+    if exists:
+        with open(filename, 'r') as rf:
+            dr = csv.DictReader(rf)
+            data = [row for row in dr] + data
+
+    with open(filename, 'w') as f:
         dw = csv.DictWriter(f, fieldnames=data[0].keys())
-        if exists:
-            dw.writeheader()
+        dw.writeheader()
         for row in data:
             dw.writerow(row)
 
@@ -469,7 +563,7 @@ def is_float(s):
 
 def hyperparam_search(param_space, env_name="seasonals-v1", 
         num_tests=20, num_episodes=1000, save_folder="./models/", 
-        base_agent="agent.json", dqn=False, rainbow=False):
+        base_agent="agent.json", anyrl=False, rainbow=False):
     data = []
     if not os.path.exists(save_folder):
         os.mkdir(save_folder)
@@ -482,25 +576,34 @@ def hyperparam_search(param_space, env_name="seasonals-v1",
         for agent_num in range(first, first + num_tests):
             args = {key: np.random.choice(s).item()
                     for key, s in param_space.items()}
-            exp = dqn_experiment if dqn else experiment
-            experiment_data = exp(args, env_name, 
-                agent_folder=os.path.join(
-                    save_folder, str(agent_num),
-                    ), 
-                num_episodes=num_episodes,
-                base_agent=base_agent,
-                rainbow=rainbow)
+            if anyrl:
+                experiment_data = anyrl_experiment(
+                        args, env_name, 
+                        agent_folder=os.path.join(
+                            save_folder, str(agent_num),
+                        ),
+                        num_episodes=num_episodes,
+                        rainbow=rainbow)
+            else:
+                experiment_data = experiment(
+                        args, env_name, 
+                        agent_folder=os.path.join(
+                            save_folder, str(agent_num),
+                        ),
+                        num_episodes=num_episodes,
+                        base_agent=base_agent)
             data.append(experiment_data)
     except (gym.error.Error, KeyboardInterrupt):
         write_csv(
                 os.path.join(save_folder, "trials.csv"), 
                 data)
-        raise
+        print("Search terminated and results written.")
+        return True
     write_csv(
             os.path.join(save_folder, "trials.csv"), 
             data)
 
-if __name__=="__main__":
+if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
             description="Suite of tools for training reinforcement learning agents")
@@ -510,9 +613,11 @@ if __name__=="__main__":
 
     parser.add_argument('-f', '--folder', type=str, 
             help="Folder the agent files are stored in (default: ./models)", default="./models")
-    parser.add_argument('-d', '--dqn', action="store_true", help="Use DQN agent")
+    parser.add_argument('-d', '--anyrl', action="store_true", help="Use DQN agent")
     parser.add_argument('-r', '--rainbow', action="store_true", 
             help="Use rainbow DQN agent")
+    parser.add_argument('-s', '--seasonals', action="store_true", 
+            help="Use seasonals environment")
 
     parser_hyperopt = subparsers.add_parser('hyperopt')
     parser_train = subparsers.add_parser('train')
@@ -548,7 +653,7 @@ if __name__=="__main__":
         hyperparam_search(spacedict, env_name=args.environment, 
                 num_tests=args.num_agents, num_episodes=args.num_episodes, 
                 save_folder=args.folder, base_agent=args.base_agent, 
-                dqn=args.dqn,
+                anyrl=args.anyrl,
                 rainbow=args.rainbow)
 
     elif args.mode == 'train':
@@ -579,11 +684,20 @@ if __name__=="__main__":
         graph_episode(history)
 
     elif args.mode == 'test-remote':
-        agent_folder = args.folder
-        env = EnvWrap(gym.make('seasonals-v1'), 
-            batched=True, subep_len=252, num_subeps=5)
-        # env = EnvWrap(RemoteEnv(os.environ['REMOTE_HOST']), remote_testing=True)
-        agent = load_agent(agent_folder, save_dir="./{}/".format(agent_folder))
-        test(agent, env)
-        agent.close()
-        env.close()
+
+        if not args.anyrl:
+            agent_folder = args.folder
+            env = EnvWrap(gym.make('seasonals-v1'))
+            # env = EnvWrap(RemoteEnv(os.environ['REMOTE_HOST']), remote_testing=True)
+            agent = load_agent(agent_folder, save_dir="./{}/".format(agent_folder))
+            test(agent, env)
+            agent.close()
+            env.close()
+        else:
+            online = builder.build_network(sess, 'online')
+            target = builder.build_network(sess, 'target')
+            dqn = DQN(online, target)
+            sess.run(tf.global_variables_initializer())
+            with tf.Session(graph=tf.Graph()) as sess:
+                tf.saved_model.loader.load(sess, [])
+            agent = load_anyrl_agent(agent_folder)
