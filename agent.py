@@ -65,7 +65,6 @@ def train(agent, env, num_episodes=1, start_index=None,
         if (start_index or end_index) and (start_index > 0 or end_index < 1969):
             env.set_simulation_window(start_index=start_index, end_index=end_index)
             state, terminal, reward_diff = env.execute(env.null_action)
-        
 
         reward = test_reward = 0
         while True:
@@ -112,10 +111,12 @@ def iter_group_indices(start, end, half_window):
     for k in range(end - start):
         yield slice(max(start + k, 0), min(start + k + 2 * half_window, end + half_window))
 
+
 def mean_std_dev(ys):
     mean = np.mean(ys)
     std_dev = np.sqrt(sum([(x - mean)**2 for x in ys])/len(ys)) if len(ys) else 0
     return mean, std_dev
+
 
 def moving_average(ys, half_window=10):
     print(ys)
@@ -136,7 +137,6 @@ def moving_average(ys, half_window=10):
         return aves, ave_tops, ave_bottoms, std_dev
     except UnboundLocalError:
         return [0], [0], [0], 0
-
 
 
 def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, ylims=None, half_window=10):
@@ -166,12 +166,11 @@ def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, 
     return aves, std_dev
 
 
-
-
 def default(o):
     if isinstance(o, np.integer): return int(o)
     elif isinstance(o, np.float): return float(o)
     return o
+
 
 def setup_agent(states, actions, args, save_dir=None,
         load_dir=None, base_agent_file="agent.json"):
@@ -242,8 +241,6 @@ def handle_ep_with_context(num_episodes, context, ts, rew):
 #        tf.train.Saver().save(context.sess, os.path.join(context.filename, 'model.ckpt_{}'.format(context.ep)))
     if context.ep >= num_episodes:
         raise gym.error.Error
-
-
 
 
 def load_anyrl_agent(agent_number):
@@ -357,6 +354,7 @@ def experiment(args, env_name, base_agent="agent.json",
     rewards, test_episodes, test_rewards = train(
             agent, train_env, num_episodes=num_episodes, 
             test_env=train_env)
+
     train_env.close()
     if visualize:
         plot_rewards(rewards, 
@@ -365,6 +363,7 @@ def experiment(args, env_name, base_agent="agent.json",
                 save_dir=agent_folder)
     reward, history = test(agent, test_env, start_index=(
         test_env.first_trading_day + 252 * 5 if seasonals else None))
+
     graph_episode(history, 
             save_path=os.path.join(agent_folder, "test.png"))
     test_env.close()
@@ -409,9 +408,12 @@ def is_float(s):
     return True
 
 
-def hyperparam_search(param_space, env_name="seasonals-v1", 
+def hyperparam_search(space_filename, env_name="seasonals-v1", 
         num_tests=20, num_episodes=1000, save_folder="./models/", 
         base_agent="agent.json", anyrl=False, rainbow=False):
+
+    with open(args.hyperparam_space, 'r') as fp:
+        space = json.load(fp=fp)
     data = []
     if not os.path.exists(save_folder):
         os.mkdir(save_folder)
@@ -451,8 +453,80 @@ def hyperparam_search(param_space, env_name="seasonals-v1",
             os.path.join(save_folder, "trials.csv"), 
             data)
 
-if __name__ == "__main__":
+def dqn_train(args):
+    seasonals = (args.environment == 'seasonals-v1')
+    save_dir = os.path.join(args.folder, args.agent_name)
+    train_env = EnvWrap(gym.make('seasonals-v1'), batched=False, 
+            subep_len=252, num_subeps=5
+            ) if seasonals else OpenAIGym(env_name)
+    test_env = EnvWrap(gym.make('seasonals-v1')
+            ) if seasonals else OpenAIGym(env_name, 
+                    monitor_video=1, 
+                    monitor=os.path.join(save_dir, 'monitoring')) 
 
+    agent = setup_agent(train_env.states, train_env.actions, int(layer_1_size), 
+            int(layer_2_size), layer_1_activation, layer_2_activation, 
+            True if has_third_layer=='True' else False,
+            float(learning_rate), float(baseline_learning_rate),
+            save_dir=save_dir)
+    
+    rewards, test_rewards, test_episodes = train(
+            agent, train_env, num_episodes=args.num_episodes)
+    agent.close()
+    train_env.close()
+    plot_rewards(rewards, test_rewards=test_rewards, 
+            test_episodes=test_episodes)
+    loss, history = test(agent, test_env)
+    graph_episode(history)
+
+
+def test_remote(args):
+    if not args.anyrl:
+        agent_folder = args.folder
+        env = EnvWrap(RemoteEnv(os.environ['REMOTE_HOST']), remote_testing=True)
+        agent = load_agent(agent_folder, save_dir="./{}/".format(agent_folder))
+        test(agent, env)
+        agent.close()
+        env.close()
+    else:
+        online = builder.build_network(sess, 'online')
+        target = builder.build_network(sess, 'target')
+        dqn = DQN(online, target)
+        sess.run(tf.global_variables_initializer())
+        with tf.Session(graph=tf.Graph()) as sess:
+        sess.run(tf.global_variables_initializer())
+        with tf.Session(graph=tf.Graph()) as sess:
+
+
+def add_hyperopt_parser(subparsers):
+    parser_hyperopt = subparsers.add_parser('hyperopt')
+    parser_hyperopt.add_argument("environment", type=str, 
+            help="OpenAI Gym environment to train the agent on")
+    parser_hyperopt.add_argument("num_agents", type=int, 
+            help="Number of agents to be generated and tested")
+    parser_hyperopt.add_argument("num_episodes", type=int, 
+            help="Number of episodes each agent should be trained on")
+    parser_hyperopt.add_argument('-b', '--base-agent', type=str, 
+            help="JSON file to load the base agent spec from", default="agent.json")
+    parser_hyperopt.add_argument('-hp', '--hyperparam-space', type=str,
+            help="JSON file to load the hyperparameter search space from", 
+            default="hyperparam_space.json")
+
+def add_train_parser(subparsers):
+    parser_train = subparsers.add_parser('train')
+    parser_train.add_argument("agent_name", type=str,
+            help="Name of the folder the agent is stored in \
+                    within the folder specified by --folder (-f)")
+    parser_train.add_argument("num_episodes", type=int,
+            help="Number of episodes to train on")
+
+def add_test_remote_parser(subparsers):
+    parser_test_remote = subparsers.add_parser('test-remote')
+    parser_test_remote.add_argument("agent_name", type=str,
+            help="Name of the folder the agent is stored in \
+                    within the folder specified by --folder (-f)")
+
+def parse_args():
     parser = argparse.ArgumentParser(
             description="Suite of tools for training reinforcement learning agents")
     subparsers = parser.add_subparsers()
@@ -466,86 +540,22 @@ if __name__ == "__main__":
             help="Use rainbow DQN agent")
     parser.add_argument('-s', '--seasonals', action="store_true", 
             help="Use seasonals environment")
+    add_hyperopt_parser(subparsers)
+    add_train_parser(subparsers)
+    add_test_remote_parser(subparsers)
+    
+    return parser.parse_args()
 
-    parser_hyperopt = subparsers.add_parser('hyperopt')
-    parser_train = subparsers.add_parser('train')
-    parser_test_remote = subparsers.add_parser('test-remote')
 
-    parser_hyperopt.add_argument("environment", type=str, 
-            help="OpenAI Gym environment to train the agent on")
-    parser_hyperopt.add_argument("num_agents", type=int, 
-            help="Number of agents to be generated and tested")
-    parser_hyperopt.add_argument("num_episodes", type=int, 
-            help="Number of episodes each agent should be trained on")
-    parser_hyperopt.add_argument('-b', '--base-agent', type=str, 
-            help="JSON file to load the base agent spec from", default="agent.json")
-    parser_hyperopt.add_argument('-hp', '--hyperparam-space', type=str,
-            help="JSON file to load the hyperparameter search space from", 
-            default="hyperparam_space.json")
-
-    parser_train.add_argument("agent_name", type=str,
-            help="Name of the folder the agent is stored in \
-                    within the folder specified by --folder (-f)")
-    parser_train.add_argument("num_episodes", type=int,
-            help="Number of episodes to train on")
-
-    parser_test_remote.add_argument("agent_name", type=str,
-            help="Name of the folder the agent is stored in \
-                    within the folder specified by --folder (-f)")
-
-    args = parser.parse_args()
-
+def main():
+    args = parse_args()
     if args.mode == "hyperopt":
-        with open(args.hyperparam_space, 'r') as fp:
-            spacedict = json.load(fp=fp)
-        hyperparam_search(spacedict, env_name=args.environment, 
+        hyperparam_search(space_filename=args.hyperparam_space, env_name=args.environment, 
                 num_tests=args.num_agents, num_episodes=args.num_episodes, 
                 save_folder=args.folder, base_agent=args.base_agent, 
                 anyrl=args.anyrl,
                 rainbow=args.rainbow)
-
     elif args.mode == 'train':
-
-        seasonals = (args.environment == 'seasonals-v1')
-        save_dir = "./models/{}/".format(agent_name)
-        train_env = EnvWrap(gym.make('seasonals-v1'), batched=False, 
-                subep_len=252, num_subeps=5
-                ) if seasonals else OpenAIGym(env_name)
-        test_env = EnvWrap(gym.make('seasonals-v1')
-                ) if seasonals else OpenAIGym(env_name, 
-                        monitor_video=1, 
-                        monitor=os.path.join(save_dir, 'monitoring')) 
-
-        agent = setup_agent(train_env.states, train_env.actions, int(layer_1_size), 
-                int(layer_2_size), layer_1_activation, layer_2_activation, 
-                True if has_third_layer=='True' else False,
-                float(learning_rate), float(baseline_learning_rate),
-                save_dir=save_dir)
-        
-        rewards, test_rewards, test_episodes = train(
-                agent, train_env, num_episodes=num_episodes)
-        agent.close()
-        train_env.close()
-        plot_rewards(rewards, test_rewards=test_rewards, 
-                test_episodes=test_episodes)
-        loss, history = test(agent, test_env)
-        graph_episode(history)
-
+        dqn_train(args)
     elif args.mode == 'test-remote':
-
-        if not args.anyrl:
-            agent_folder = args.folder
-            env = EnvWrap(gym.make('seasonals-v1'))
-            # env = EnvWrap(RemoteEnv(os.environ['REMOTE_HOST']), remote_testing=True)
-            agent = load_agent(agent_folder, save_dir="./{}/".format(agent_folder))
-            test(agent, env)
-            agent.close()
-            env.close()
-        else:
-            online = builder.build_network(sess, 'online')
-            target = builder.build_network(sess, 'target')
-            dqn = DQN(online, target)
-            sess.run(tf.global_variables_initializer())
-            with tf.Session(graph=tf.Graph()) as sess:
-            sess.run(tf.global_variables_initializer())
-            with tf.Session(graph=tf.Graph()) as sess:
+        test_remote(args)
