@@ -16,14 +16,9 @@ from tensorforce.execution.runner import Runner
 from tensorforce.contrib.openai_gym import OpenAIGym
 
 import tensorflow as tf
-from anyrl.algos import DQN, TFScheduleValue, LinearTFSchedule
-from anyrl.envs import BatchedGymEnv
-from anyrl.envs.wrappers import BatchedFrameStack
-from anyrl.models import MLPDistQNetwork, noisy_net_dense, \
-        MLPQNetwork, EpsGreedyQNetwork
-from anyrl.rollouts import BatchedPlayer, PrioritizedReplayBuffer, \
-        NStepPlayer, BasicPlayer, UniformReplayBuffer
-from anyrl.spaces import gym_space_vectorizer
+from anyrl.algos import DQN
+
+from anyrl_builders import DQNBuilder, PPOBuilder
 
 
 def episode_finished(episode, reward):
@@ -171,8 +166,6 @@ def plot_rewards(rewards, save_dir=None, test_rewards=None, test_episodes=None, 
     return aves, std_dev
 
 
-def geom_mean(*args):
-    return int(np.round(np.prod(args) ** (1./len(args))))
 
 
 def default(o):
@@ -180,97 +173,32 @@ def default(o):
     elif isinstance(o, np.float): return float(o)
     return o
 
-
-# TODO: move branch to higher level
 def setup_agent(states, actions, args, save_dir=None,
         load_dir=None, base_agent_file="agent.json"):
 
-    if save_dir:
-        saver = {'directory':save_dir,
-            'steps':1000}
-    else: saver = None
-
-
     with open(base_agent_file, 'r') as fp:
         base_agent = json.load(fp=fp)
-    
-    preprocessing = [{'type':'running_standardize'}]
 
-    network = [
-            {'type':"dense", 'size':args['layer_1_size'], 
-                'activation':args['layer_1_activation']},
-            {'type':"dense", 'size':args['layer_2_size'],
-                'activation':args['layer_2_activation']},
-    ]
-    if args['has_third_layer']:
-        network.append(
-            {'type':"dense", 'size':geom_mean(actions['num_actions'], 
-                args['layer_2_size']), 'activation':'sigmoid'},
-    )
-    kwargs=dict(
-        states=states,
-        actions=actions,
-        network=network,
-        saver=saver,
-        states_preprocessing=preprocessing,
-    )
+    config_builders = {'ppo_agent':PPOConfig,
+            'dqn_agent':DQNConfig}
+    agent_type = config_builders[base_agent['type']]
+    
+    agent_config = AgentConfig(base_agent)
+
+    config_builder = config_builders[base_agent['type']]
+
     if base_agent['type'] == 'ppo_agent':
-        args['baseline_learning_rate'] = (
-            args['learning_rate'] * args['baseline_lr_mult'])
-        baseline_optimizer = {
-                'type':"multi_step",
-                'optimizer':{
-                    'type':"adam",
-                    'learning_rate':args['baseline_learning_rate']
-                },
-                'num_steps':5
-        }
-        step_optimizer = {
-            'type':"adam",
-            'learning_rate':args['learning_rate']
-        }
-        baseline = {
-            'type':'mlp',
-            'sizes':[args['layer_1_size'], geom_mean(args['layer_1_size'], 5), 5]
-        }
-        kwargs.update(
-            dict(
-                step_optimizer=step_optimizer,
-                baseline=baseline,
-                baseline_optimizer=baseline_optimizer
-            )
-        )
-        agent_spec = base_agent
-        agent_spec.update(kwargs)
-        agent_spec = {k:default(v) for k, v in agent_spec.items()}
-        agent = PPOAgent(**{key:value 
-            for key, value in agent_spec.items() if key != 'type'})
-    
+        kwargs.update(get_ppo_agent_spec(args))
     elif base_agent['type'] == 'dqn_agent':
-        actions_exploration = {
-            'type':"epsilon_decay",
-            'initial_epsilon':float(args['initial_epsilon']),
-            'final_epsilon':0.1,
-            'timesteps':40000
-        }
-        optimizer = {
-            'type':"adam",
-            'learning_rate':float(args['learning_rate'])
-        }
 
         kwargs.update(
-            dict(
-                target_sync_frequency=int(args['target_sync_frequency']),
-                actions_exploration=actions_exploration,
-                optimizer=optimizer
-            )
 
         )
-        agent_spec = base_agent
-        agent_spec.update(kwargs)
-        agent_spec = {k:default(v) for k, v in agent_spec.items()}
-        agent = DQNAgent(**{key:value 
-            for key, value in agent_spec.items() if key != 'type'})
+    agent_spec = base_agent
+    agent_spec.update(kwargs)
+    agent_spec = {k:default(v) for k, v in agent_spec.items()}
+    agent = agent_type(**{key:value 
+        for key, value in agent_spec.items() if key != 'type'})
     
     with open(os.path.join(save_dir, "agent.json"), 'w') as f:
         f.write(json.dumps(agent_spec))
@@ -296,7 +224,9 @@ class Record:
 
 
 def handle_ep_with_context(num_episodes, context, ts, rew):
-    print("Reward: {} for episode {} at timestep {} \t\t Last 100 average: {}".format(rew, context.ep, ts, np.mean(context.rewards[-100:])))
+    print("Reward: {} for episode {} at timestep {} \t\t\
+            Last 100 average: {}".format(
+                rew, context.ep, ts, np.mean(context.rewards[-100:])))
     context.rewards.append(rew)
     context.ep += 1
     if np.mean(context.rewards[-100:]) > 200:
@@ -313,89 +243,7 @@ def handle_ep_with_context(num_episodes, context, ts, rew):
     if context.ep >= num_episodes:
         raise gym.error.Error
 
-class ModelBuilder:
-    def __init__(self, env, args):
-        self.args = args
-        self.env = env
 
-    def build_network(self, sess, name):
-        raise NotImplementedError
-
-    def finish(self, sess, dqn):
-        raise NotImplementedError
-
-
-class DQNBuilder(ModelBuilder):
-
-    def build_network(self, sess, name):
-        layer_sizes = [self.args['layer_1_size'], self.args['layer_2_size']]
-        if self.args['has_third_layer']:
-            layer_sizes.append(
-                    geom_mean(self.args['layer_2_size'], self.env.action_space.n)
-                    )
-        return MLPQNetwork(
-            sess,
-            self.env.action_space.n,
-            gym_space_vectorizer(self.env.observation_space),
-            name,
-            layer_sizes=layer_sizes)
-
-    def finish(self, sess, dqn, optimize=True):
-        eps_decay_sched = TFScheduleValue(sess,
-                LinearTFSchedule(
-                    self.args['exploration_timesteps'],
-                    self.args['initial_epsilon'], 
-                    self.args['final_epsilon']
-                    )
-                ) if self.args['epsilon_decay'] else self.args['epsilon']
-        return {
-            "player": BasicPlayer(
-                self.env, EpsGreedyQNetwork(dqn.online_net, eps_decay_sched)),
-            "optimize_op": dqn.optimize(learning_rate=self.args['learning_rate']) if optimize else None,
-            "replay_buffer": UniformReplayBuffer(1000),
-        }
-
-
-class RainbowDQNBuilder(DQNBuilder):
-    """
-    Rainbow DQN: Noisy double dueling distributional deep q-network 
-    with prioritized experience replay, as specified in this paper:
-    https://arxiv.org/pdf/1710.02298.pdf
-
-    Should only be used in atari environments, and those with similarly 
-    complex input, as the PER slows down training considerably without
-    sufficient parralelization
-    """
-
-    def build_network(self, sess, name):
-        return MLPDistQNetwork(
-            sess, 
-            self.env.action_space.n, 
-            gym_space_vectorizer(self.env.observation_space), 
-            name, 51, -10, 10, 
-            layer_sizes=layer_sizes,
-            dueling=True, 
-            dense=partial(noisy_net_dense, sigma0=self.args['sigma0']))
-
-
-    def finish(self, sess, dqn):
-        env = BatchedGymEnv([[self.env]])
-        return {
-            "player": NStepPlayer(BatchedPlayer(self.env, dqn.online_net), 3),
-            "optimize_op": dqn.optimize(learning_rate=0.002),
-            "replay_buffer": PrioritizedReplayBuffer(20000, 0.5, 0.4, epsilon=0.2),
-        }
-
-    def build_model(self, online_network, target_network):
-        return DQN(online_network, target_network)
-
-
-class LSTMACBuilder(ModelBuilder):
-    def build_network(self, sess, name):
-        return RNNCellAC(sess,
-                  self.env.action_space.n,
-                  gym_space_vectorizer(self.env.observation_space),
-                  make_cell=lambda: tf.contrib.rnn.LSTMCell(self.args['layer_1_size']))
 
 
 def load_anyrl_agent(agent_number):
@@ -699,5 +547,5 @@ if __name__ == "__main__":
             dqn = DQN(online, target)
             sess.run(tf.global_variables_initializer())
             with tf.Session(graph=tf.Graph()) as sess:
-                tf.saved_model.loader.load(sess, [])
-            agent = load_anyrl_agent(agent_folder)
+            sess.run(tf.global_variables_initializer())
+            with tf.Session(graph=tf.Graph()) as sess:
