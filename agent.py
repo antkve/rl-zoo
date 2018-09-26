@@ -1,7 +1,3 @@
-import gym 
-from gym_seasonals.envs.seasonals_env import SeasonalsEnv 
-from gym_seasonals.envs.seasonals_env import portfolio_var
-from gym_seasonals.envs.remote_env import RemoteEnv 
 from wrappers import EnvWrap
 import os, sys, json
 import numpy as np
@@ -549,6 +545,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.environment == "seasonals-v1":
+        import gym 
+        from gym_seasonals.envs.seasonals_env import SeasonalsEnv 
+        from gym_seasonals.envs.seasonals_env import portfolio_var
+        from gym_seasonals.envs.remote_env import RemoteEnv 
     if args.mode == "hyperopt":
         hyperparam_search(space_filename=args.hyperparam_space, env_name=args.environment, 
                 num_tests=args.num_agents, num_episodes=args.num_episodes, 
